@@ -1921,6 +1921,22 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
       ],
     )
 
+  async def test_each_channel_reaches_only_its_own_window_of_the_band(self):
+    """Eight channels 9.0 mm apart in a 6.0 to 606.5 mm band: channel 0 reaches no further forward
+    than the seven in front of it allow, and channel 7 no further back than the seven behind it."""
+    pipettes, rack, sent = await channels_over_a_rack()
+    spot = rack.get_item("H1")  # its centre at y 82.8
+    in_front = [Coordinate(0, -20.0, 0)]  # 62.8: in the band, in front of channel 0's window
+    with self.assertRaisesRegex(ValueError, "channel 0 reaches y between 69.0 and 606.5 mm"):
+      await pipettes.pick_up_tips([spot], use_channels=[0], offsets=in_front)
+    behind = [Coordinate(0, 463.0, 0)]  # 545.8: in the band, behind channel 7's window
+    with self.assertRaisesRegex(ValueError, "channel 7 reaches y between 6.0 and 543.5 mm"):
+      await pipettes.pick_up_tips([spot], use_channels=[7], offsets=behind)
+    self.assertEqual(sent, [])
+
+    await pipettes.pick_up_tips([spot], use_channels=[7], offsets=in_front)
+    self.assertIn("yp0000 0000 0000 0000 0000 0000 0000 0628", sent[-1])
+
   async def test_a_picked_up_tip_is_on_the_shaft_and_not_in_the_spot(self):
     pipettes, rack, _ = await channels_over_a_rack()
     spot = rack.get_item("A1")

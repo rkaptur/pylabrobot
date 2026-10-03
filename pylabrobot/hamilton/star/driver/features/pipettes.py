@@ -810,6 +810,25 @@ class Pipettes:
     """
     return next(a for a in self._driver.arms if a.pipettes is self)
 
+  def _y_band(self) -> Tuple[float, float]:
+    """The Y band the device states its channels reach, in mm, lowest first.
+
+    The front of it differs by the side the arm is on.
+
+    Returns:
+      The (lowest, highest) Y any channel is sent to.
+
+    Raises:
+      RuntimeError: If the limits were not read, so how far they reach is unknown.
+    """
+    device = self._driver.configuration
+    if device is None:
+      raise RuntimeError("no configuration read; have you called `star.setup()`?")
+    low = (
+      device.left_arm_min_y_position if self.arm.side == "left" else device.right_arm_min_y_position
+    )
+    return low, device.pip_maximal_y_position
+
   def _check_reachable(self, axis: Literal["x", "y", "z"], value: float) -> None:
     """Raise if the channels cannot be sent where they are being asked to go.
 
@@ -839,14 +858,53 @@ class Pipettes:
     elif axis == "z":
       low, high = self.configuration.z_range
     else:
-      low = (
-        device.left_arm_min_y_position
-        if self.arm.side == "left"
-        else device.right_arm_min_y_position
-      )
-      high = device.pip_maximal_y_position
+      low, high = self._y_band()
     if not low <= value <= high:
       raise ValueError(f"{axis} must be between {low} and {high} mm, is {value}")
+
+  def _channel_y_range(self, channel: int) -> Tuple[float, float]:
+    """The Y window one channel reaches, in mm, lowest first.
+
+    The channels share one band and stay in order across it, each at least its minimum spacing
+    from the next. Every channel in front of this one stands between it and the front of the band,
+    and every channel behind it between it and the back, so the more channels an arm carries, the
+    narrower the window of the ones at either end.
+
+    Args:
+      channel: 0-indexed from the back.
+
+    Returns:
+      The (lowest, highest) Y this channel reaches.
+
+    Raises:
+      RuntimeError: If the limits or a channel's width were not read yet.
+    """
+    low, high = self._y_band()
+    last = self.num_channels - 1
+    in_front = self._min_spacing_between(channel, last) if channel < last else 0.0
+    behind = self._min_spacing_between(0, channel) if channel > 0 else 0.0
+    return round(low + in_front, 1), round(high - behind, 1)
+
+  def _check_channel_reaches_y(self, channel: int, y: float) -> None:
+    """Raise if one channel cannot stand at `y`, the channels on either side packed beside it.
+
+    Composes on `_check_reachable`: within the band, and within this channel's own window of it.
+
+    Args:
+      channel: 0-indexed from the back.
+      y: where it would be sent, in mm.
+
+    Raises:
+      ValueError: If the channel cannot reach it.
+      RuntimeError: If the limits or a channel's width were not read yet.
+    """
+    self._check_reachable("y", y)
+    low, high = self._channel_y_range(channel)
+    if not low <= y <= high:
+      raise ValueError(
+        f"channel {channel} reaches y between {low} and {high} mm, the channels in front of and "
+        f"behind it taking up the rest of the band; is {y}"
+      )
 
   async def _require_iswap_parked(self) -> None:
     """Raise unless the iSWAP on these channels' arm is parked; nothing to check without one.
@@ -3983,7 +4041,7 @@ class Pipettes:
         xs.append(0)
         ys.append(0)
       self._check_reachable("x", round(centre.x, 1))
-      self._check_reachable("y", round(centre.y, 1))
+      self._check_channel_reaches_y(channel, round(centre.y, 1))
       pattern.append(True)
       xs.append(round(centre.x * 10))
       ys.append(round(centre.y * 10))

@@ -379,8 +379,8 @@ class CoreGrippers:
     if not tool_seek > tool_position_z:
       raise ValueError(f"tool_seek ({tool_seek}) must be above tool_position_z ({tool_position_z})")
     pipettes._check_reachable("x", tool_position_x)
-    for y in (rear_channel_position_y, front_channel_position_y):
-      pipettes._check_reachable("y", y)
+    pipettes._check_channel_reaches_y(back_channel, rear_channel_position_y)
+    pipettes._check_channel_reaches_y(front_channel, front_channel_position_y)
     for z in (tool_seek, tool_position_z, minimum_traverse_height_start):
       pipettes._check_reachable("z", z)
     spacing = pipettes._min_spacing_between(back_channel, front_channel)
@@ -725,9 +725,29 @@ class CoreGrippers:
 
   # -- by resource ---------------------------------------------------------------------------------
 
+  def _check_pair_reaches_y(self, y: float, width: float) -> None:
+    """Raise unless the two channels holding the tools reach either side of `y`, `width` apart.
+
+    The jaws open `width` apart, centred on `y`, each under its own channel: the back channel at
+    `y + width / 2` and the front one at `y - width / 2`, each checked against its own window.
+
+    Args:
+      y: the jaws' centre, in mm.
+      width: how far apart the jaws open, in mm.
+
+    Raises:
+      ValueError: If either channel cannot reach its side.
+      RuntimeError: If the tools are not on the channels.
+    """
+    back, front = self._require_mounted()
+    pipettes = self._pipettes
+    pipettes._check_channel_reaches_y(back, round(y + width / 2, 1))
+    pipettes._check_channel_reaches_y(front, round(y - width / 2, 1))
+
   def _check_held_move(
     self,
     xyz: Coordinate,
+    jaw_opening: float,
     traverse_heights: Tuple[float, float],
     z_speed: float,
     z_acceleration: float,
@@ -736,14 +756,15 @@ class CoreGrippers:
 
     `xyz.z` is the jaws' grip line, which rides below the stop disc by the tool's length outside
     the channel: it reaches the stop discs' window shifted down by that, and no lower than the
-    tool's bottom on the deck. The traverse heights are the channels' own.
+    tool's bottom on the deck. The traverse heights are the channels' own. Along Y the jaws open
+    `jaw_opening` apart over `xyz.y`, the widest the two channels stand.
 
     Raises:
       ValueError: If a position, height, speed or acceleration is out of range.
     """
     pipettes = self._pipettes
     pipettes._check_reachable("x", xyz.x)
-    pipettes._check_reachable("y", xyz.y)
+    self._check_pair_reaches_y(xyz.y, jaw_opening)
     for z in traverse_heights:
       pipettes._check_reachable("z", z)
     c = pipettes.configuration
@@ -837,7 +858,11 @@ class CoreGrippers:
       )
     grip = self._compute_pickup_location(resource, offset, from_top)
     self._check_held_move(
-      grip, (minimum_traverse_height_start, minimum_traverse_height_end), z_speed, z_acceleration
+      grip,
+      resource_size_y + 2 * y_clearance,
+      (minimum_traverse_height_start, minimum_traverse_height_end),
+      z_speed,
+      z_acceleration,
     )
     weakest, strongest = self.configuration.grip_strength_range
     if not weakest <= grip_strength <= strongest:
@@ -954,6 +979,7 @@ class CoreGrippers:
     release = self._compute_drop_location(destination, offset, child)
     self._check_held_move(
       release,
+      self._holding_resource_width + 2 * y_clearance,
       (minimum_traverse_height_start, minimum_traverse_height_end),
       z_speed,
       z_acceleration,
@@ -1061,7 +1087,8 @@ class CoreGrippers:
 
     Raises:
       RuntimeError: If the tools are not picked up.
-      ValueError: If the jaw width is out of range, the check is aborted, or ZP fails otherwise.
+      ValueError: If the jaw width is out of range, a channel cannot reach its side of the
+        resource, the check is aborted, or ZP fails otherwise.
     """
     back, front = self._require_mounted()
     pipettes = self._pipettes
@@ -1079,6 +1106,7 @@ class CoreGrippers:
         f"width between channels must be between {min_width} and {max_width} mm, is "
         f"{y_width_to_gripper_bump}"
       )
+    self._check_pair_reaches_y(center.y, y_width_to_gripper_bump)
 
     resource_found = False
     try_counter = 0

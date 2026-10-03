@@ -164,6 +164,15 @@ class TestPickUpAndDropTools(unittest.IsolatedAsyncioTestCase):
       await self.grippers.pick_up_tools_at_location(1337.5, 225.0, 107.0, 125.0, tool_seek=220.0)
     self.assertEqual(self.tool_commands(), [])
 
+  async def test_each_tool_is_checked_against_its_own_channels_reach(self):
+    """Channel 4 has channels 5 to 7 in front of it, 9.0 mm each: it reaches no further forward
+    than 33.0 mm, though the front channel reaches 6.0 mm."""
+    with self.assertRaisesRegex(ValueError, "channel 4 reaches y between 33.0 and"):
+      await self.grippers.pick_up_tools_at_location(1337.5, 225.0, 20.0, 50.0, front_channel=4)
+    self.assertEqual(self.tool_commands(), [])
+    await self.grippers.pick_up_tools_at_location(1337.5, 225.0, 20.0, 50.0)
+    self.assertIn("ya0500yb0200pa07pb08", self.tool_commands()[0])
+
   async def test_a_channel_carrying_something_is_refused(self):
     shaft = self.grippers._pipettes.shaft(7)
     assert shaft is not None
@@ -397,6 +406,24 @@ class TestResourceByResource(unittest.IsolatedAsyncioTestCase):
     pipettes.configuration.z_range = (low, high)
     await self.grippers.pick_up_resource(self.plate)
     self.assertEqual(len(self.sent), 1)
+
+  async def test_each_channel_of_the_pair_is_checked_against_its_own_reach(self):
+    """Open 88.5 mm over y 60.0, the front jaw stands at 15.75 mm: in front of channel 4's reach,
+    which ends at 33.0 mm behind channels 5 to 7, and within channel 7's."""
+    spot = Coordinate(400.0, 60.0, 100.0)
+    await self.grippers.pick_up_tools(front_channel=4)
+    await self.grippers.pick_up_resource(self.plate)
+    with self.assertRaisesRegex(ValueError, "channel 4 reaches y between 33.0 and"):
+      await self.grippers.drop_resource(spot)
+    self.assertEqual(len(self.sent), 1)
+    self.assertIs(self.grippers._held_resource, self.plate)
+
+    await self.grippers.return_resource()
+    await self.grippers.return_tools()
+    await self.grippers.pick_up_tools()
+    await self.grippers.pick_up_resource(self.plate)
+    await self.grippers.drop_resource(spot)
+    self.assertTrue(self.sent[-1].startswith("C0ZRxs04000xd0yj0600"), self.sent[-1])
 
   async def test_out_of_range_arguments_send_nothing(self):
     await self.grippers.pick_up_tools()
